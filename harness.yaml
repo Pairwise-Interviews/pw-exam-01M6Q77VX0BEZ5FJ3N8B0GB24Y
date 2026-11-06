@@ -1,0 +1,4 @@
+version: 1
+tests:
+  service: api
+  command: ["python", "-c", "print('no tests yet')"]

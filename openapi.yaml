@@ -1,0 +1,115 @@
+openapi: 3.1.0
+jsonSchemaDialect: https://json-schema.org/draft/2020-12/schema
+info:
+  title: C.2 API
+  version: "1"
+  description: >-
+    The API that the candidate's api service serves as JSON on port 8000
+    (C3.M5). The kit ships this file as openapi.yaml. A job has id, type,
+    payload, status, error, created_at, started_at and finished_at (C3.M8).
+    status moves from queued to running, then to succeeded or failed. A sleep
+    job succeeds payload.duration_ms milliseconds after a worker starts it
+    (C3.M9).
+servers:
+  - url: http://api.pw.internal:8000
+    description: Inside a harness run
+  - url: http://localhost:8000
+    description: Local development
+paths:
+  /healthz:
+    get:
+      operationId: healthz
+      summary: The API is up and can query Postgres
+      responses:
+        "200":
+          description: Healthy
+  /jobs:
+    post:
+      operationId: createJob
+      summary: Submit a job
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/JobRequest"
+      responses:
+        "201":
+          description: The job
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+    get:
+      operationId: listJobs
+      summary: All jobs
+      responses:
+        "200":
+          description: All jobs
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [jobs]
+                properties:
+                  jobs:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Job"
+  /jobs/{id}:
+    get:
+      operationId: getJob
+      summary: One job
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The job
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+components:
+  schemas:
+    SleepPayload:
+      type: object
+      required: [duration_ms]
+      properties:
+        duration_ms:
+          type: integer
+          minimum: 0
+    JobRequest:
+      type: object
+      required: [type, payload]
+      properties:
+        type:
+          const: sleep
+        payload:
+          $ref: "#/components/schemas/SleepPayload"
+    Job:
+      type: object
+      required: [id, type, payload, status, error, created_at, started_at, finished_at]
+      properties:
+        id:
+          type: string
+        type:
+          const: sleep
+        payload:
+          $ref: "#/components/schemas/SleepPayload"
+        status:
+          enum: [queued, running, succeeded, failed]
+        error:
+          type: [string, "null"]
+        created_at:
+          type: string
+          format: date-time
+        started_at:
+          type: [string, "null"]
+          format: date-time
+        finished_at:
+          type: [string, "null"]
+          format: date-time

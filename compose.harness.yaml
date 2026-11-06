@@ -1,0 +1,23 @@
+# C9.M2: only runsc and the limits.json service values, for the three candidate services.
+services:
+  api:
+    runtime: runsc
+    cpus: 1
+    mem_limit: 2g
+    pids_limit: 1280
+    ulimits:
+      nproc: 512
+  worker:
+    runtime: runsc
+    cpus: 1
+    mem_limit: 2g
+    pids_limit: 1280
+    ulimits:
+      nproc: 512
+  web:
+    runtime: runsc
+    cpus: 1
+    mem_limit: 2g
+    pids_limit: 1280
+    ulimits:
+      nproc: 512

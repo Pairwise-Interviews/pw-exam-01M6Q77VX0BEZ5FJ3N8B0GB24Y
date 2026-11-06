@@ -1,0 +1,16 @@
+{
+  "pack": "c2-a",
+  "version": "1.0.0",
+  "smoke_image": "ghcr.io/pairwise-interviews/c2-a-smoke:1.0.0",
+  "services": {
+    "api": {
+      "port": 8000,
+      "health": "/healthz"
+    },
+    "worker": {},
+    "web": {
+      "port": 3000,
+      "health": "/"
+    }
+  }
+}

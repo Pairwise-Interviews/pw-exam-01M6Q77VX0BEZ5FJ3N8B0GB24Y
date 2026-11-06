@@ -1,0 +1,144 @@
+#!/usr/bin/env bash
+# pw-check: build your services, start the stack and run the smoke test, as a run does, but on your machine.
+# Rendered from guide/pw-check.in by guide/render.py for exercise pack 1.0.0. Do not edit by hand.
+#
+#   ./pw-check [--keep]
+#
+# Needs Docker with Compose, and bash. Exit 0: the smoke test passed. Exit 1: your stack failed a check.
+# Exit 2: pw-check could not run, or the smoke test could not. --keep leaves the stack up afterwards.
+#
+# Unlike a run, pw-check uses Docker's default runtime (not gVisor), applies no resource limits, does not run your
+# tests and records nothing.
+
+PROJECT="pw-c2-a"
+COMPOSE_SHA256="c7202590608e922cc5fb3c6be893e1db85cd6ce7118e4d988e09fe80e3430825"
+UP_WAIT_S="400"
+KEEP=0
+STARTED=0
+ENVF=""
+OUTF=""
+
+say() { printf '%s\n' "$*"; }
+warn() { printf 'pw-check: warning: %s\n' "$*" >&2; }
+die() { printf 'pw-check: %s\n' "$1" >&2; exit "${2:-1}"; }
+
+for arg in "$@"; do
+  case $arg in
+    --keep) KEEP=1 ;;
+    -h|--help) sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) printf 'pw-check: unknown argument %s (use --keep or --help)\n' "$arg" >&2; exit 2 ;;
+  esac
+done
+
+cd "$(dirname "$0")" || exit 2
+
+docker compose version >/dev/null 2>&1 || die "Docker with Compose is needed, and 'docker compose version' failed." 2
+
+# The four fixed paths of your repository (a run fails at validate without them).
+missing=0
+for path in services/api/Dockerfile services/worker/Dockerfile services/web/Dockerfile harness.yaml; do
+  if [ ! -f "$path" ]; then
+    printf 'pw-check: %s is missing; a run without it fails at the validate stage.\n' "$path" >&2
+    missing=1
+  fi
+done
+[ "$missing" = 0 ] || exit 1
+grep -Eq '^version:[[:space:]]*1[[:space:]]*$' harness.yaml || die "harness.yaml must say 'version: 1'." 1
+grep -Eq '^tests:' harness.yaml || die "harness.yaml must have a tests: block with service and command." 1
+for doc in DESIGN.md AI-USAGE.md; do
+  [ -f "$doc" ] || warn "$doc is missing. It is required for assessment; a run records whether it is present and does not fail without it."
+done
+
+[ -f compose.yaml ] || die "compose.yaml is missing. Restore the kit's copy; ./pw-check runs the stack from it." 2
+if command -v sha256sum >/dev/null 2>&1; then
+  have=$(sha256sum compose.yaml | cut -d' ' -f1)
+else
+  have=$(shasum -a 256 compose.yaml | cut -d' ' -f1)
+fi
+if [ "$have" != "$COMPOSE_SHA256" ]; then
+  warn "compose.yaml differs from the kit's copy. A run deletes the compose file at the root of your repository and uses Pairwise's copy, so this changes ./pw-check only."
+fi
+
+ENVF=$(mktemp "${TMPDIR:-/tmp}/pw-check-env.XXXXXX") || exit 2   # empty, so a local .env changes nothing, as in a run
+OUTF=$(mktemp "${TMPDIR:-/tmp}/pw-check-smoke.XXXXXX") || exit 2
+
+dc() { docker compose -f compose.yaml --project-directory . --env-file "$ENVF" "$@"; }
+
+# shellcheck disable=SC2329  # runs from the EXIT trap
+cleanup() {
+  local rc=$?
+  trap - EXIT
+  if [ "$STARTED" = 1 ] && [ "$KEEP" = 0 ]; then
+    dc down --volumes --remove-orphans >/dev/null 2>&1
+    left=$(docker ps -aq --filter "label=com.docker.compose.project=$PROJECT" 2>/dev/null)
+    if [ -n "$left" ]; then   # a one-off container can outlive down and keep a network attached
+      # shellcheck disable=SC2086
+      docker rm -f $left >/dev/null 2>&1
+      dc down --volumes --remove-orphans >/dev/null 2>&1
+    fi
+  elif [ "$STARTED" = 1 ]; then
+    say "pw-check: --keep given, so the stack is still up. Stop it with: docker compose -f compose.yaml --project-directory . down --volumes --remove-orphans"
+  fi
+  rm -f "$ENVF" "$OUTF"
+  exit "$rc"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+show_logs() {
+  say "pw-check: the last 50 lines of each service's log:"
+  dc logs --no-color --tail 50 api worker web 2>&1
+}
+
+STARTED=1
+say "pw-check: building your services"
+dc build || die "the build failed; see the output above." 1
+
+say "pw-check: starting the stack"
+if ! dc up --detach --wait; then
+  show_logs
+  die "the stack did not come up." 1
+fi
+
+mkdir -p .pw-out/smoke || die "cannot create .pw-out/smoke" 2
+
+say "pw-check: waiting up to ${UP_WAIT_S} s for the services"
+dc run --rm -T smoke wait --timeout "$UP_WAIT_S"
+rc=$?
+if [ "$rc" -ne 0 ]; then
+  show_logs
+  if [ "$rc" -ge 125 ]; then die "the smoke test could not run (exit $rc)." 2; fi
+  die "the services did not answer in ${UP_WAIT_S} s." 1
+fi
+
+USERARGS=()
+if [ "$(uname -s)" = Linux ]; then USERARGS=(--user "$(id -u):$(id -g)"); fi   # so .pw-out is not left owned by root
+
+say "pw-check: running the smoke test"
+dc run --rm -T "${USERARGS[@]}" smoke | tee "$OUTF"
+rc=${PIPESTATUS[0]}
+
+npass=0; nfail=0; nskip=0; nerror=0
+while IFS= read -r line || [ -n "$line" ]; do
+  case $line in
+    "PASS "*) npass=$((npass + 1)) ;;
+    "FAIL "*) nfail=$((nfail + 1)) ;;
+    "SKIP "*) nskip=$((nskip + 1)) ;;
+    "ERROR "*) nerror=$((nerror + 1)) ;;
+  esac
+done < "$OUTF"
+say "pw-check: $npass passed, $nfail failed, $nskip skipped, $nerror errors. Detail: .pw-out/smoke/junit.xml"
+
+if [ "$rc" -eq 0 ]; then
+  if [ "$((nfail + nerror))" -gt 0 ]; then
+    die "the smoke output was inconsistent: it exited 0 but reported a failure." 2
+  fi
+  say "pw-check: passed"
+  exit 0
+fi
+if [ "$rc" -eq 1 ]; then
+  show_logs
+  die "the smoke test failed." 1
+fi
+die "the smoke test could not run (exit $rc)." 2
